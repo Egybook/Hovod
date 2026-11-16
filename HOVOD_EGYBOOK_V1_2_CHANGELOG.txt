@@ -1,0 +1,16 @@
+Hovod EgyBook Secure Playback V1.2
+Date: 2026-11-16
+Base: EgyBook/Hovod main snapshot supplied by project owner (V1.1).
+
+Changed:
+- apps/api/src/routes/secure-playback.ts: require issuer, user subject and unique token ID claims; maximum ticket lifetime 10 minutes; tighter issued-at skew; no-store/no-referrer metadata headers.
+- apps/api/src/index.ts: redact request URLs in Fastify logs to avoid logging bearer playback tickets in query strings.
+- docs/egybook-secure-playback.md: update ticket schema, minting example and security limitations.
+- SECURITY_PATCH_NOTES.md: record V1.2 changes and validation status.
+
+Added:
+- SECURE_PLAYBACK_V1_2_VALIDATION.md: runtime validation checklist.
+- HOVOD_EGYBOOK_V1_2_CHANGELOG.txt: this changelog.
+
+No upstream source files were deleted. This is a development candidate, not production-certified.
+Build validation was not completed: npm ci timed out, and the available Node.js runtime (22.16.0) is below the repository engine requirement (>=22.23.4).
