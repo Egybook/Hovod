@@ -1,0 +1,50 @@
+import type { FastifyInstance } from 'fastify';
+import { and, desc, eq } from 'drizzle-orm';
+import { assets, aiJobs, ASSET_STATUS, S3_PATHS } from '@hovod/db';
+import { db } from '../db.js';
+import { env } from '../env.js';
+import { AppError, NotFoundError } from '../middleware/error-handler.js';
+
+export async function aiRoutes(app: FastifyInstance) {
+  /** Public AI data for a playback ID */
+  app.get<{ Params: { playbackId: string } }>('/v1/playback/:playbackId/ai', async (request) => {
+    if (env.PLAYBACK_SECURITY_MODE === 'private') throw new AppError(404, 'Playback not found');
+    const { playbackId } = request.params;
+
+    const [asset] = await db
+      .select()
+      .from(assets)
+      .where(and(eq(assets.playbackId, playbackId), eq(assets.status, ASSET_STATUS.READY)))
+      .limit(1);
+
+    if (!asset) throw new NotFoundError('Playback not found');
+
+    // Newest first: re-processing an asset inserts another ai_jobs row, and an
+    // unordered LIMIT 1 would keep serving the previous run's statuses.
+    const [aiJob] = await db
+      .select()
+      .from(aiJobs)
+      .where(eq(aiJobs.assetId, asset.id))
+      .orderBy(desc(aiJobs.createdAt))
+      .limit(1);
+
+    if (!aiJob) {
+      return { data: { status: 'none' } };
+    }
+
+    const baseUrl = `${env.S3_PUBLIC_BASE_URL}/${S3_PATHS.PLAYBACK_PREFIX}/${asset.id}`;
+
+    return {
+      data: {
+        status: aiJob.status,
+        language: aiJob.language,
+        transcriptionStatus: aiJob.transcriptionStatus,
+        subtitlesStatus: aiJob.subtitlesStatus,
+        chaptersStatus: aiJob.chaptersStatus,
+        subtitlesUrl: aiJob.subtitlesPath ? `${baseUrl}/${S3_PATHS.AI_SUBTITLES}` : null,
+        transcriptUrl: aiJob.transcriptPath ? `${baseUrl}/${S3_PATHS.AI_TRANSCRIPT}` : null,
+        chaptersUrl: aiJob.chaptersPath ? `${baseUrl}/${S3_PATHS.AI_CHAPTERS}` : null,
+      },
+    };
+  });
+}
