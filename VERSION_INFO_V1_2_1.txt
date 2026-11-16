@@ -1,0 +1,6 @@
+HOVOD EGYBOOK SECURE PLAYBACK V1.2.1
+
+Based on the V1.2 GitHub ZIP supplied by the project owner.
+Patch: Fastify metadata route now receives `reply` before setting headers.
+Validation: 75 TypeScript files passed syntax/transpile parsing. Full typecheck/build and live R2/browser tests remain unverified.
+Do not deploy to production until runtime security tests pass.
