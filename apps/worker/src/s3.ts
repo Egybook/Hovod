@@ -1,0 +1,116 @@
+import { createReadStream } from 'node:fs';
+import { readdir, stat, lstat } from 'node:fs/promises';
+import path from 'node:path';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { env } from './env.js';
+
+export const s3 = new S3Client({
+  region: env.S3_REGION,
+  endpoint: env.S3_ENDPOINT,
+  forcePathStyle: env.S3_FORCE_PATH_STYLE,
+  credentials: {
+    accessKeyId: env.S3_ACCESS_KEY_ID,
+    secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+  },
+});
+
+const UPLOAD_BATCH_SIZE = 10;
+const MAX_RETRIES = 3;
+
+/** MIME types by extension — browsers refuse `<track>` files and Safari refuses HLS manifests served as octet-stream. */
+const CONTENT_TYPES: Record<string, string> = {
+  '.m3u8': 'application/vnd.apple.mpegurl',
+  '.ts': 'video/mp2t',
+  '.m4s': 'video/iso.segment',
+  '.mp4': 'video/mp4',
+  '.vtt': 'text/vtt',
+  '.json': 'application/json',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+};
+
+/** MIME type for an uploaded playback file (falls back to octet-stream). */
+export function contentTypeFor(filePath: string): string {
+  return CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+}
+
+/** Segments and MP4s never change once written; manifests and text tracks may be regenerated. */
+export function cacheControlFor(filePath: string): string {
+  if (env.PLAYBACK_SECURITY_MODE === 'private') return 'private, no-store, max-age=0';
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.ts' || ext === '.m4s' || ext === '.mp4') return 'public, max-age=31536000, immutable';
+  if (ext === '.m3u8') return 'public, max-age=60';
+  if (ext === '.vtt' || ext === '.json') return 'public, max-age=300';
+  return 'public, max-age=86400';
+}
+
+/**
+ * Object ACL applied to playback files. Disabled by default. Public playback
+ * must be an explicit deployment choice; private playback requires a private bucket.
+ */
+export const publicAcl: 'public-read' | undefined =
+  env.PLAYBACK_SECURITY_MODE === 'private' ? undefined : (env.S3_PUBLIC_ACL ? 'public-read' : undefined);
+
+async function withRetry<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === retries) throw err;
+      const delay = 1000 * Math.pow(2, attempt);
+      console.warn(`[s3] Upload failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error('Unreachable');
+}
+
+export async function uploadDirectory(root: string, prefix: string): Promise<void> {
+  const resolvedRoot = path.resolve(root);
+  const entries = await readdir(root, { recursive: true });
+  const filePaths: { fullPath: string; key: string }[] = [];
+
+  for (const entry of entries) {
+    const relativePath = entry.toString();
+    const fullPath = path.resolve(root, relativePath);
+
+    // Path traversal prevention: ensure file is within root
+    if (!fullPath.startsWith(resolvedRoot)) continue;
+
+    // Skip symlinks to prevent symlink-based attacks
+    const linkStat = await lstat(fullPath);
+    if (linkStat.isSymbolicLink()) continue;
+
+    const fileStat = await stat(fullPath);
+    if (!fileStat.isFile()) continue;
+
+    filePaths.push({
+      fullPath,
+      key: `${prefix}/${relativePath.replaceAll('\\', '/')}`,
+    });
+  }
+
+  for (let i = 0; i < filePaths.length; i += UPLOAD_BATCH_SIZE) {
+    const batch = filePaths.slice(i, i + UPLOAD_BATCH_SIZE);
+    await Promise.all(
+      batch.map(async ({ fullPath, key }) => {
+        await withRetry(async () => {
+          const body = createReadStream(fullPath);
+          await s3.send(new PutObjectCommand({
+            Bucket: env.S3_BUCKET,
+            Key: key,
+            Body: body,
+            ContentType: contentTypeFor(fullPath),
+            CacheControl: cacheControlFor(fullPath),
+            ...(publicAcl ? { ACL: publicAcl } : {}),
+          }));
+        });
+      })
+    );
+  }
+}
