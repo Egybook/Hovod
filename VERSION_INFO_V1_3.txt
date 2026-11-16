@@ -1,0 +1,6 @@
+Project: Hovod - EgyBook Secure Playback
+Version: V1.3
+Date: 2026-11-16
+Base version: V1.2.1
+Purpose: Add automatic private playback ticket renewal support.
+Status: Development patch; EgyBook callback/player integration and full build tests pending.
