@@ -1,0 +1,5 @@
+Project: Hovod — Altare compatibility image
+Version: Altare V1.4
+Base: Current published Hovod-main source supplied on 2026-11-17
+Purpose: Complete the Altare static compatibility pass and correct role-aware health reporting.
+Validation: Shell syntax and static consistency checks passed; Docker build and Altare runtime tests remain pending.
