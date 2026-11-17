@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Healthcheck for the Altare launcher. A container is healthy only when every
+# role-specific process is alive and, when the API is enabled, DB readiness passes.
+set -u
+
+ENV_DIR=/run/s6/container_environment
+read_setting() {
+  local name="$1" fallback="$2" value=""
+  if [ -r "$ENV_DIR/$name" ]; then
+    value="$(cat "$ENV_DIR/$name" 2>/dev/null || true)"
+  fi
+  printf '%s' "${value:-$fallback}"
+}
+
+role="$(read_setting HOVOD_ROLE "${HOVOD_ROLE:-allinone}")"
+port="$(read_setting PORT "${PORT:-3000}")"
+
+worker_is_alive() {
+  local pid state
+  pid="$(cat /run/hovod-worker.pid 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # kill -0 also succeeds for zombies; do not report a dead worker as healthy.
+  if [ -r "/proc/$pid/stat" ]; then
+    state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)"
+    [ "$state" != Z ] || return 1
+  fi
+  return 0
+}
+
+api_is_ready() {
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  node -e '
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    fetch(`http://127.0.0.1:${process.argv[1]}/health/ready`, { signal: controller.signal })
+      .then((response) => process.exit(response.ok ? 0 : 1))
+      .catch(() => process.exit(1))
+      .finally(() => clearTimeout(timer));
+  ' "$port"
+}
+
+case "$role" in
+  allinone)
+    api_is_ready || exit 1
+    worker_is_alive || exit 1
+    ;;
+  api)
+    api_is_ready || exit 1
+    ;;
+  worker)
+    worker_is_alive || exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
